@@ -1,0 +1,96 @@
+name: automind-openenv
+version: "1.0.0"
+
+description: >
+  AutoMind OpenEnv is a real-world automotive decision-making environment
+  where an AI agent performs fault diagnosis, driving decisions, and full
+  autonomous control under realistic conditions including noise, failures,
+  and human override.
+
+# ------------------------------
+# ENTRYPOINT (FastAPI)
+# ------------------------------
+entrypoint: main:app
+
+# ------------------------------
+# ENDPOINTS (MANDATORY)
+# ------------------------------
+endpoints:
+  reset: /reset
+  step: /step
+  state: /state
+
+# ------------------------------
+# ACTION SPACE
+# ------------------------------
+action_space:
+  type: object
+  properties:
+    action_type:
+      type: string
+      enum:
+        - brake
+        - accelerate
+        - turn_left
+        - turn_right
+        - continue
+        - stop
+        - request_service
+    value:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+    reason:
+      type: string
+
+# ------------------------------
+# OBSERVATION SPACE
+# ------------------------------
+observation_space:
+  type: object
+  properties:
+    speed:
+      type: number
+    engine_temp:
+      type: number
+    distance_to_obstacle:
+      type: number
+    road_condition:
+      type: string
+      enum: [dry, wet, rain]
+    oil_level:
+      type: number
+    battery_health:
+      type: number
+    failures:
+      type: object
+    history:
+      type: array
+
+# ------------------------------
+# TASKS (IMPORTANT)
+# ------------------------------
+tasks:
+  - name: fault_diagnosis
+    description: Detect vehicle faults such as overheating, low oil, or battery issues
+    difficulty: easy
+
+  - name: driving_decision
+    description: Choose safe driving actions based on environment state
+    difficulty: medium
+
+  - name: autonomous_control
+    description: Full pipeline including diagnosis, safety handling, and decision-making
+    difficulty: hard
+
+# ------------------------------
+# ENVIRONMENT METADATA
+# ------------------------------
+environment:
+  max_steps: 20
+  deterministic: true
+
+# ------------------------------
+# TEAM INFO (OPTIONAL BUT GOOD)
+# ------------------------------
+author: CosmoTech Team
