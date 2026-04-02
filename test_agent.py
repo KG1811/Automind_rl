@@ -70,6 +70,7 @@ def run_test(difficulty):
     print("Final Outcome:", result.info["outcome"])
     print("Final Metrics:")
     print(result.metrics.model_dump())
+   
 
 
 if __name__ == "__main__":
