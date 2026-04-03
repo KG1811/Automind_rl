@@ -2,9 +2,35 @@ from fastapi import FastAPI
 from models import Action, Observation
 from environment import AutoMindEnv
 
+import threading
+import time
+
 app = FastAPI()
 
 env = AutoMindEnv()
+
+# ---------------------------------
+# AUTO SIMULATION LOOP (NEW 🔥)
+# ---------------------------------
+def auto_simulation():
+    while True:
+        try:
+            if env.current_observation is not None:
+                # default safe action (can later plug agent here)
+                action = Action(
+                    action_type="continue",
+                    value=0.5,
+                    reason="auto simulation"
+                )
+                env.step(action)
+        except Exception as e:
+            print("Auto simulation error:", e)
+
+        time.sleep(10)  # ⏱ every 10 seconds
+
+
+# Start background thread
+threading.Thread(target=auto_simulation, daemon=True).start()
 
 
 # ---------------------------------
@@ -22,33 +48,33 @@ def health():
 def reset(task_name: str = "fault_diagnosis", difficulty: str = "easy"):
     obs = env.reset(task_name, difficulty)
     return {
-        "observation": obs.model_dump()   # ✅ FIXED
+        "observation": obs.model_dump()
     }
 
 
 # ---------------------------------
-# STEP
+# STEP (MANUAL CONTROL)
 # ---------------------------------
 @app.post("/step")
 def step(action: Action):
     result = env.step(action)
 
     return {
-        "observation": result.observation.model_dump(),  # ✅ FIXED
+        "observation": result.observation.model_dump(),
         "reward": result.reward,
         "done": result.done,
         "info": result.info,
-        "metrics": result.metrics.model_dump(),          # ✅ FIXED
+        "metrics": result.metrics.model_dump(),
     }
 
 
 # ---------------------------------
-# STATE
+# STATE (AUTO UPDATING)
 # ---------------------------------
 @app.get("/state")
 def state():
     obs = env.state()
-    return obs.model_dump()   # ✅ FIXED
+    return obs.model_dump()
 
 
 # ---------------------------------
@@ -59,17 +85,17 @@ def tasks():
     return [
         "fault_diagnosis",
         "driving_decision",
-        "autonomous_control",   # ✅ FIXED NAME
+        "autonomous_control",
     ]
 
 
 # ---------------------------------
-# SCHEMA (IMPORTANT FOR OPENENV)
+# SCHEMA
 # ---------------------------------
 @app.get("/schema")
 def schema():
     return {
-        "Observation": Observation.model_json_schema(),  # ✅ REAL SCHEMA
+        "Observation": Observation.model_json_schema(),
         "Action": Action.model_json_schema(),
     }
 
