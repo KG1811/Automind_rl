@@ -1,10 +1,8 @@
-# ==============================
-# AutoMind OpenEnv - Environment (FINAL FIXED)
-# ==============================
-
 from __future__ import annotations
 
 import random
+import threading
+import time
 from typing import Optional
 
 from models import (
@@ -14,222 +12,486 @@ from models import (
     Action,
     StepResult,
     Metrics,
+    TelemetryState,
 )
-
 from simulator import AutoMindSimulator
+from service_engine import find_nearest_service
 
 
 class AutoMindEnv:
-
-    def __init__(self, seed: int = 42, max_steps: int = 20) -> None:
+    def __init__(
+        self,
+        seed: int = 42,
+        max_steps: int = 20,
+        update_interval_seconds: int = 10,
+    ) -> None:
         self.seed = seed
         self.rng = random.Random(seed)
         self.max_steps = max_steps
+        self.update_interval_seconds = update_interval_seconds
 
-        self.simulator = AutoMindSimulator(seed=seed)
+        self.simulator = AutoMindSimulator(seed=seed, dt_seconds=float(update_interval_seconds))
 
         self.current_task: Optional[str] = None
         self.current_difficulty: Optional[str] = None
 
         self.episode_state: EpisodeState = EpisodeState(max_steps=max_steps)
         self.current_observation: Optional[Observation] = None
+        self.current_true_state: Optional[TelemetryState] = None
 
+        self.last_action = Action(action_type="continue", value=0.25, reason="background cruise")
         self.override_active = False
         self.override_count = 0
 
-    # ---------------------------------
-    # INITIAL STATE
-    # ---------------------------------
-    def _build_initial_observation(self, task_name: str, difficulty: str) -> Observation:
+        self.last_metrics = Metrics(
+            safety_score=1.0,
+            efficiency_score=1.0,
+            diagnosis_score=0.5,
+            sequence_score=0.0,
+        )
+        self.last_reward = 0.0
+        self.last_done = False
+        self.last_info: dict = {
+            "outcome": "not_initialized",
+            "collision_risk": 0.0,
+            "override_active": False,
+            "health_score": 100,
+            "alerts": [],
+            "service_recommended": None,
+            "service_booking": None,
+        }
 
+        self.running = True
+        self._lock = threading.Lock()
+        threading.Thread(target=self._auto_update_loop, daemon=True).start()
+
+    def is_initialized(self) -> bool:
+        return self.current_observation is not None
+
+    def _build_initial_telemetry_state(self, difficulty: str) -> TelemetryState:
         if difficulty == "easy":
-            return Observation(
-                speed=35.0,
-                engine_temp=88.0,
-                distance_to_obstacle=60.0,
+            return TelemetryState(
+                speed=18.0,
+                rpm=1200.0,
+                throttle=18.0,
+                gear=1,
+                engine_load=24.0,
+                transmission_load=18.0,
+                fuel_rate=1.4,
+                acceleration=0.6,
+                engine_temp=86.0,
+                distance_to_obstacle=85.0,
                 road_condition="dry",
-                oil_level=78.0,
-                battery_health=84.0,
+                drive_mode="city",
+                oil_level=82.0,
+                battery_health=88.0,
+                latitude=28.613900,
+                longitude=77.209000,
+                heading=0.0,
                 failures=FailureState(),
-                history=[],
             )
 
         if difficulty == "medium":
-            return Observation(
-                speed=48.0,
-                engine_temp=98.0,
-                distance_to_obstacle=28.0,
+            return TelemetryState(
+                speed=42.0,
+                rpm=2200.0,
+                throttle=34.0,
+                gear=3,
+                engine_load=48.0,
+                transmission_load=42.0,
+                fuel_rate=2.6,
+                acceleration=0.3,
+                engine_temp=97.0,
+                distance_to_obstacle=34.0,
                 road_condition="wet",
-                oil_level=32.0,
-                battery_health=70.0,
+                drive_mode="cruise",
+                oil_level=31.0,
+                battery_health=73.0,
+                latitude=28.613900,
+                longitude=77.209000,
+                heading=22.0,
                 failures=FailureState(low_oil=True),
-                history=[],
             )
 
         if difficulty == "hard":
-            return Observation(
-                speed=62.0,
-                engine_temp=114.0,
-                distance_to_obstacle=14.0,
+            return TelemetryState(
+                speed=61.0,
+                rpm=3150.0,
+                throttle=52.0,
+                gear=4,
+                engine_load=72.0,
+                transmission_load=61.0,
+                fuel_rate=3.9,
+                acceleration=0.2,
+                engine_temp=113.0,
+                distance_to_obstacle=16.0,
                 road_condition="rain",
+                drive_mode="sport",
                 oil_level=18.0,
-                battery_health=61.0,
+                battery_health=58.0,
+                latitude=28.613900,
+                longitude=77.209000,
+                heading=38.0,
                 failures=FailureState(
                     brake_failure=True,
                     sensor_failure=True,
                     engine_overheating=True,
                     low_oil=True,
                 ),
-                history=[],
             )
 
         raise ValueError("Invalid difficulty")
 
-    # ---------------------------------
-    # RESET
-    # ---------------------------------
-    def reset(self, task_name: str = "fault_diagnosis", difficulty: str = "easy") -> Observation:
-
-        self.current_task = task_name
-        self.current_difficulty = difficulty
-
-        self.episode_state = EpisodeState(
-            step_count=0,
-            max_steps=self.max_steps,
-            is_collision=False,
-            is_engine_failure=False,
-            is_safe_stop=False,
+    def _telemetry_to_observation(self, telemetry: TelemetryState) -> Observation:
+        return Observation(
+            speed=telemetry.speed,
+            rpm=telemetry.rpm,
+            throttle=telemetry.throttle,
+            gear=telemetry.gear,
+            engine_load=telemetry.engine_load,
+            transmission_load=telemetry.transmission_load,
+            fuel_rate=telemetry.fuel_rate,
+            acceleration=telemetry.acceleration,
+            engine_temp=telemetry.engine_temp,
+            distance_to_obstacle=telemetry.distance_to_obstacle,
+            road_condition=telemetry.road_condition,
+            drive_mode=telemetry.drive_mode,
+            oil_level=telemetry.oil_level,
+            battery_health=telemetry.battery_health,
+            latitude=telemetry.latitude,
+            longitude=telemetry.longitude,
+            heading=telemetry.heading,
+            failures=telemetry.failures,
+            history=[],
         )
 
-        self.current_observation = self._build_initial_observation(task_name, difficulty)
+    def reset(self, task_name: str = "fault_diagnosis", difficulty: str = "easy") -> Observation:
+        with self._lock:
+            self.current_task = task_name
+            self.current_difficulty = difficulty
 
-        self.override_active = False
-        self.override_count = 0
+            self.episode_state = EpisodeState(
+                step_count=0,
+                max_steps=self.max_steps,
+                is_collision=False,
+                is_engine_failure=False,
+                is_safe_stop=False,
+            )
 
-        return self.current_observation
+            self.current_true_state = self._build_initial_telemetry_state(difficulty=difficulty)
+            self.current_observation = self._telemetry_to_observation(self.current_true_state)
 
-    # ---------------------------------
-    # STATE (OLD - KEEP)
-    # ---------------------------------
+            self.override_active = False
+            self.override_count = 0
+            self.last_action = Action(action_type="continue", value=0.25, reason="background cruise")
+            self.last_done = False
+            self.last_reward = 0.0
+
+            self.last_metrics = self._compute_metrics(
+                collision_risk=0.02,
+                observation=self.current_observation,
+            )
+            self.last_info = self._build_info(
+                observation=self.current_observation,
+                collision_risk=0.02,
+                action_type="continue",
+            )
+
+            return self.current_observation
+
     def state(self) -> Observation:
         if self.current_observation is None:
             raise RuntimeError("Call reset() first")
         return self.current_observation
 
-    # ---------------------------------
-    # 🔥 NEW: FULL STATE (FIX FOR UI)
-    # ---------------------------------
-    def get_full_state(self):
+    def _auto_update_loop(self) -> None:
+        while self.running:
+            time.sleep(self.update_interval_seconds)
 
-        if self.current_observation is None:
-            raise RuntimeError("Call reset() first")
+            with self._lock:
+                if self.current_observation is None or self.current_true_state is None or self.last_done:
+                    continue
 
-        sim_result = self.simulator.transition(
-            observation=self.current_observation,
-            action_type="continue",
-            action_value=0.0,
-            difficulty=self.current_difficulty,
+                transition = self.simulator.transition(
+                    state=self.current_true_state,
+                    previous_observation=self.current_observation,
+                    action_type=self.last_action.action_type,
+                    action_value=self.last_action.value,
+                    difficulty=self.current_difficulty or "easy",
+                )
+
+                self.current_true_state = transition["true_state"]
+                self.current_observation = transition["observation"]
+
+                self.episode_state.step_count += 1
+                self.episode_state.is_collision |= transition["is_collision"]
+                self.episode_state.is_engine_failure |= transition["is_engine_failure"]
+
+                if self.last_action.action_type == "stop" and self.current_observation.speed <= 3.0:
+                    self.episode_state.is_safe_stop = True
+
+                self.last_metrics = self._compute_metrics(
+                    collision_risk=transition["collision_risk"],
+                    observation=self.current_observation,
+                )
+                self.last_reward = self._compute_reward(
+                    action=self.last_action,
+                    collision_risk=transition["collision_risk"],
+                    observation=self.current_observation,
+                    is_collision=transition["is_collision"],
+                )
+                self.last_done = self._check_done()
+                self.last_info = self._build_info(
+                    observation=self.current_observation,
+                    collision_risk=transition["collision_risk"],
+                    action_type=self.last_action.action_type,
+                )
+
+    def compute_health(self, obs: Observation, collision_risk: float) -> int:
+        score = 100.0
+
+        if obs.engine_temp > 110:
+            score -= 22
+        elif obs.engine_temp > 100:
+            score -= 10
+
+        if obs.oil_level < 20:
+            score -= 24
+        elif obs.oil_level < 35:
+            score -= 10
+
+        if obs.battery_health < 30:
+            score -= 18
+        elif obs.battery_health < 50:
+            score -= 8
+
+        if obs.distance_to_obstacle < 10:
+            score -= 16
+        elif obs.distance_to_obstacle < 20:
+            score -= 8
+
+        if collision_risk > 0.85:
+            score -= 18
+        elif collision_risk > 0.55:
+            score -= 8
+
+        if obs.failures.brake_failure:
+            score -= 12
+        if obs.failures.sensor_failure:
+            score -= 8
+        if obs.failures.engine_overheating:
+            score -= 14
+
+        return max(0, min(100, int(round(score))))
+
+    def get_alerts(self, obs: Observation, collision_risk: float) -> list[str]:
+        alerts: list[str] = []
+
+        if obs.engine_temp > 110 or obs.failures.engine_overheating:
+            alerts.append("ENGINE OVERHEATING")
+        if obs.oil_level < 25 or obs.failures.low_oil:
+            alerts.append("LOW OIL")
+        if obs.battery_health < 30 or obs.failures.battery_issue:
+            alerts.append("BATTERY ISSUE")
+        if obs.distance_to_obstacle < 12 or collision_risk > 0.70:
+            alerts.append("COLLISION RISK")
+        if obs.failures.brake_failure:
+            alerts.append("BRAKE FAILURE")
+        if obs.failures.sensor_failure:
+            alerts.append("SENSOR FAILURE")
+
+        return alerts
+
+    def _build_service_payload(
+        self,
+        observation: Observation,
+        health_score: int,
+        alerts: list[str],
+        action_type: str,
+    ) -> tuple[Optional[dict], Optional[dict]]:
+        service_recommended = None
+        service_booking = None
+
+        severe = (
+            health_score < 55
+            or "ENGINE OVERHEATING" in alerts
+            or "BRAKE FAILURE" in alerts
+            or "BATTERY ISSUE" in alerts
         )
 
-        new_observation = sim_result["observation"]
-
-        self.current_observation = new_observation
-
-        metrics = self._compute_metrics(sim_result)
-
-        return {
-            "observation": new_observation.model_dump(),
-            "metrics": metrics.model_dump(),
-            "info": {
-                "collision_risk": sim_result["collision_risk"],
-                "override_active": self.override_active,
-            }
-        }
-
-    # ---------------------------------
-    # STEP (NO CHANGE)
-    # ---------------------------------
-    def step(self, action: Action) -> StepResult:
-
-        if self.current_observation is None:
-            raise RuntimeError("Call reset() before step()")
-
-        if self.current_difficulty is None:
-            raise RuntimeError("Call reset() first.")
-
-        if self.episode_state.step_count % 3 == 0:
-            self.override_active = True
-        else:
-            self.override_active = False
-
-        if self.override_active and action.action_type in ["stop", "brake"]:
-            action = Action(
-                action_type="accelerate",
-                value=action.value,
-                reason="Human override",
+        if severe:
+            service_recommended = find_nearest_service(
+                observation.latitude,
+                observation.longitude,
             )
 
-        sim_result = self.simulator.transition(
-            observation=self.current_observation,
-            action_type=action.action_type,
-            action_value=action.value,
-            difficulty=self.current_difficulty,
+        should_book = action_type == "request_service" or health_score < 35
+
+        if service_recommended and should_book:
+            service_booking = {
+                "status": "booked",
+                "center_name": service_recommended["name"],
+                "distance_km": service_recommended["distance_km"],
+                "eta_minutes": service_recommended["eta_minutes"],
+                "slots_available": service_recommended["slots_available"],
+                "urgency": "HIGH" if health_score < 35 else "MEDIUM",
+            }
+
+        return service_recommended, service_booking
+
+    def _build_info(self, observation: Observation, collision_risk: float, action_type: str) -> dict:
+        health_score = self.compute_health(observation, collision_risk)
+        alerts = self.get_alerts(observation, collision_risk)
+        service_recommended, service_booking = self._build_service_payload(
+            observation=observation,
+            health_score=health_score,
+            alerts=alerts,
+            action_type=action_type,
         )
 
-        new_observation = sim_result["observation"]
+        return {
+            "outcome": self.get_episode_outcome(),
+            "collision_risk": round(collision_risk, 3),
+            "override_active": self.override_active,
+            "health_score": health_score,
+            "alerts": alerts,
+            "service_recommended": service_recommended,
+            "service_booking": service_booking,
+        }
 
-        self.episode_state.step_count += 1
-        self.episode_state.is_collision |= sim_result["is_collision"]
-        self.episode_state.is_engine_failure = sim_result["is_engine_failure"]
-
-        if action.action_type == "stop" and new_observation.speed <= 3:
-            self.episode_state.is_safe_stop = True
-
-        reward = self._compute_reward(action, sim_result, new_observation)
-        done = self._check_done()
-        metrics = self._compute_metrics(sim_result)
-
-        self.current_observation = new_observation
-
-        return StepResult(
-            observation=new_observation,
-            reward=reward,
-            done=done,
-            info={
-                "outcome": self.get_episode_outcome(),
-                "collision_risk": sim_result["collision_risk"],
-                "override_active": self.override_active,
-            },
-            metrics=metrics,
-        )
-
-    # ---------------------------------
-    def _compute_reward(self, action, sim_result, new_observation):
-        if sim_result["is_collision"]:
+    def _compute_reward(
+        self,
+        action: Action,
+        collision_risk: float,
+        observation: Observation,
+        is_collision: bool,
+    ) -> float:
+        if is_collision:
             return -1.0
-        return 0.4 * (1 - sim_result["collision_risk"])
 
-    def _compute_metrics(self, sim_result):
+        safety = 1.0 - collision_risk
+        efficiency = max(0.0, min(1.0, observation.speed / 90.0))
+        action_quality = 1.0 if action.action_type in ["brake", "stop", "continue", "request_service"] else 0.6
+        sequence_quality = min(1.0, max(0.2, len(observation.history) / 6.0))
+
+        reward = (
+            0.4 * safety
+            + 0.2 * efficiency
+            + 0.2 * action_quality
+            + 0.2 * sequence_quality
+        )
+
+        return max(-1.0, min(1.0, round(reward, 3)))
+
+    def _compute_metrics(self, collision_risk: float, observation: Observation) -> Metrics:
+        safety = 0.0 if collision_risk >= 0.97 else max(0.0, 1.0 - collision_risk)
+        efficiency = max(0.0, min(1.0, observation.speed / 90.0))
+
+        diagnosis = 0.5
+        if (
+            observation.engine_temp > 105
+            or observation.oil_level < 25
+            or observation.battery_health < 30
+            or observation.failures.engine_overheating
+            or observation.failures.low_oil
+            or observation.failures.battery_issue
+        ):
+            diagnosis = 1.0
+
+        sequence = min(1.0, self.episode_state.step_count / 10.0)
+
         return Metrics(
-            safety_score=1.0 if not sim_result["is_collision"] else 0.0,
-            efficiency_score=max(0.0, 1 - sim_result["collision_risk"]),
-            diagnosis_score=1.0,
-            sequence_score=1.0,
+            safety_score=round(safety, 3),
+            efficiency_score=round(efficiency, 3),
+            diagnosis_score=round(diagnosis, 3),
+            sequence_score=round(sequence, 3),
         )
 
-    def _check_done(self):
-        return (
-            self.episode_state.is_collision or
-            self.episode_state.is_engine_failure or
-            self.episode_state.is_safe_stop or
-            self.episode_state.step_count >= self.max_steps
-        )
+    def _check_done(self) -> bool:
+        return self.episode_state.check_done()
 
-    def get_episode_outcome(self):
+    def get_episode_outcome(self) -> str:
         if self.episode_state.is_collision:
             return "failure_collision"
         if self.episode_state.is_engine_failure:
             return "failure_engine"
         if self.episode_state.is_safe_stop:
             return "success_safe_stop"
+        if self.episode_state.step_count >= self.max_steps:
+            return "episode_timeout"
         return "in_progress"
+
+    def step(self, action: Action) -> StepResult:
+        with self._lock:
+            if self.current_observation is None or self.current_true_state is None:
+                raise RuntimeError("Call reset() before step()")
+            if self.current_difficulty is None:
+                raise RuntimeError("Call reset() first.")
+
+            self.override_active = self.episode_state.step_count > 0 and self.episode_state.step_count % 3 == 0
+
+            applied_action = action
+            if self.override_active and action.action_type in ["stop", "brake"]:
+                self.override_count += 1
+                applied_action = Action(
+                    action_type="accelerate",
+                    value=min(1.0, max(0.2, action.value)),
+                    reason="Human override",
+                )
+
+            transition = self.simulator.transition(
+                state=self.current_true_state,
+                previous_observation=self.current_observation,
+                action_type=applied_action.action_type,
+                action_value=applied_action.value,
+                difficulty=self.current_difficulty,
+            )
+
+            self.current_true_state = transition["true_state"]
+            self.current_observation = transition["observation"]
+            self.last_action = applied_action
+
+            self.episode_state.step_count += 1
+            self.episode_state.is_collision |= transition["is_collision"]
+            self.episode_state.is_engine_failure |= transition["is_engine_failure"]
+
+            if applied_action.action_type == "stop" and self.current_observation.speed <= 3.0:
+                self.episode_state.is_safe_stop = True
+
+            self.last_metrics = self._compute_metrics(
+                collision_risk=transition["collision_risk"],
+                observation=self.current_observation,
+            )
+            self.last_reward = self._compute_reward(
+                action=applied_action,
+                collision_risk=transition["collision_risk"],
+                observation=self.current_observation,
+                is_collision=transition["is_collision"],
+            )
+            self.last_done = self._check_done()
+            self.last_info = self._build_info(
+                observation=self.current_observation,
+                collision_risk=transition["collision_risk"],
+                action_type=applied_action.action_type,
+            )
+
+            return StepResult(
+                observation=self.current_observation,
+                reward=self.last_reward,
+                done=self.last_done,
+                info=self.last_info,
+                metrics=self.last_metrics,
+            )
+
+    def get_full_state(self) -> dict:
+        with self._lock:
+            if self.current_observation is None:
+                raise RuntimeError("Call reset() first")
+
+            return {
+                "observation": self.current_observation.model_dump(),
+                "reward": self.last_reward,
+                "done": self.last_done,
+                "metrics": self.last_metrics.model_dump(),
+                "info": self.last_info,
+            }
