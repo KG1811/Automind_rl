@@ -1,88 +1,43 @@
-# AutoMind OpenEnv Environment
+# AutoMind OpenEnv
 
-## Overview
-AutoMind OpenEnv is a real-world automotive decision-making environment designed for training and evaluating AI agents.
+AutoMind OpenEnv is a real-world automotive decision environment for agent evaluation.
 
-The agent must:
-- Diagnose vehicle faults
-- Make safe driving decisions
-- Handle failures
-- Decide whether to continue or stop
-- Recommend service actions
+## What it simulates
+- ECU telemetry: speed, RPM, throttle, engine load, fuel rate, engine temperature
+- TCU telemetry: gear, transmission load, drive mode
+- Vehicle context: road condition, obstacle distance, acceleration
+- Health and alerting: overheating, low oil, battery issue, collision risk
+- GPS movement and nearest-service recommendation
+- Human override behavior
+- Continuous live background telemetry updates
 
----
-
-## Observation Space
-The agent observes:
-- Speed
-- Engine temperature
-- Distance to obstacle
-- Road condition (dry / wet / rain)
-- Oil level
-- Battery health
-- Failure states (brake failure, overheating, etc.)
-- Action history (memory)
-
----
-
-## Action Space
-The agent can perform:
-- `brake`
-- `accelerate`
-- `turn`
-- `continue`
-- `stop`
-- `request_service`
-
----
+## Required APIs
+- `GET /health`
+- `POST /reset`
+- `POST /step`
+- `GET /state`
+- `GET /tasks`
+- `GET /schema`
 
 ## Tasks
+1. `fault_diagnosis`
+2. `driving_decision`
+3. `autonomous_control`
 
-### 1. Fault Diagnosis (Easy)
-- Identify faults like overheating, low oil, battery issues
+## Reward
+Dense step reward based on:
+- safety
+- efficiency
+- action quality
+- sequence quality
 
-### 2. Driving Decision (Medium)
-- Choose safe driving actions based on environment state
+## Metrics
+- safety_score
+- efficiency_score
+- diagnosis_score
+- sequence_score
 
-### 3. Autonomous Control (Hard)
-- Full pipeline:
-  - Diagnose faults
-  - Handle failures
-  - Avoid collisions
-  - Adapt to human override
-  - Decide service vs continue
-
----
-
-## Episode Design
-An episode terminates when:
-- Collision occurs
-- Engine failure occurs
-- Vehicle safely stops
-- Maximum steps reached
-
----
-
-## Reward vs Grader
-
-- **Reward** → Step-wise feedback for agent learning  
-- **Grader** → Final evaluation score (0.0–1.0)
-
-This separation ensures:
-- Stable RL training
-- Fair evaluation
-
----
-
-## API Endpoints
-
-### POST `/reset`
-Initialize environment
-
-### POST `/step`
-Send action:
-```json
-{
-  "action_type": "brake",
-  "value": 0.7
-}
+## Run locally
+```bash
+pip install -r requirements.txt
+uvicorn main:app --host 0.0.0.0 --port 8000
