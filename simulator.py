@@ -68,8 +68,19 @@ class AutoMindSimulator:
             targetSpeed = max(0.0, state.speed - 15.0)
             targetThrottle = max(0.0, state.throttle - 10.0)
         else: # continue
-            targetSpeed = state.speed
-            targetThrottle = state.throttle
+            # Simulate dynamic real-world driving behavior
+            if state.distance_to_obstacle > 90:
+                targetSpeed = clamp(state.speed + 12.0 + random.uniform(-2, 10), 40.0, 130.0)
+                targetThrottle = clamp(state.throttle + 10.0, 40.0, 85.0)
+            elif state.distance_to_obstacle > 40:
+                targetSpeed = clamp(state.speed + random.uniform(-5, 10), 20.0, 75.0)
+                targetThrottle = clamp(state.throttle + random.uniform(-8, 8), 20.0, 55.0)
+            elif state.distance_to_obstacle < 20:
+                targetSpeed = max(0.0, state.speed - 25.0)
+                targetThrottle = 0.0
+            else:
+                targetSpeed = state.speed + random.uniform(-4.0, 4.0)
+                targetThrottle = state.throttle + random.uniform(-5.0, 5.0)
 
         import random
         # Apply ECU physics to reach targets
