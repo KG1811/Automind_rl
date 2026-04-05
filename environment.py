@@ -285,7 +285,7 @@ class AutoMindEnv:
             alerts.append("LOW OIL")
         if obs.battery_health < 30 or obs.failures.battery_issue:
             alerts.append("BATTERY ISSUE")
-        if obs.distance_to_obstacle < 12 or collision_risk > 0.70:
+        if collision_risk > 0.70:
             alerts.append("COLLISION RISK")
         if obs.failures.brake_failure:
             alerts.append("BRAKE FAILURE")
