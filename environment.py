@@ -265,15 +265,7 @@ class AutoMindEnv:
         elif obs.battery_health < 50:
             score -= 8
 
-        if obs.distance_to_obstacle < 10:
-            score -= 16
-        elif obs.distance_to_obstacle < 20:
-            score -= 8
 
-        if collision_risk > 0.85:
-            score -= 18
-        elif collision_risk > 0.55:
-            score -= 8
 
         if obs.failures.brake_failure:
             score -= 12

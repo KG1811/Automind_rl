@@ -117,6 +117,11 @@ def update_engine_temperature(
         noise = random.uniform(0.02, 0.1)
         temp = engine_temp - noise * 10.0 
         return clamp(temp, 25.0, 150.0)
+    elif action_type == "brake":
+        # Cools down when braking
+        noise = random.uniform(0.02, 0.08)
+        temp = engine_temp - noise * 8.0 
+        return clamp(temp, 40.0, 150.0)
     else:
         noise = random.uniform(-0.2, 0.4)
         temp = engine_temp + (coolantTarget - engine_temp) * 0.08 + noise
