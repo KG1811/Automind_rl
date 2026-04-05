@@ -50,48 +50,51 @@ class AutoMindSimulator:
         action_type: str,
         action_value: float,
     ) -> dict:
-        base_speed = apply_speed_decay(state.speed)
-
-        throttle = state.throttle
-        acceleration = 0.0
-
+        
+        # Determine targets based on action
         if action_type == "accelerate":
-            throttle = clamp(state.throttle + 18.0 * action_value, 0.0, 100.0)
+            targetSpeed = 45.0 + 75.0 * action_value
+            targetThrottle = 40.0 + 45.0 * action_value
         elif action_type == "brake":
-            throttle = clamp(state.throttle - 28.0 * action_value, 0.0, 100.0)
+            targetSpeed = max(0.0, state.speed - 30.0 * action_value)
+            targetThrottle = 0.0
         elif action_type == "stop":
-            throttle = 0.0
-        elif action_type == "continue":
-            throttle = clamp(state.throttle * 0.92, 0.0, 100.0)
-        elif action_type == "turn_left" or action_type == "turn_right":
-            throttle = clamp(state.throttle * 0.85, 0.0, 100.0)
+            targetSpeed = 0.0
+            targetThrottle = 0.0
         elif action_type == "request_service":
-            throttle = clamp(state.throttle * 0.70, 0.0, 100.0)
+            targetSpeed = max(0.0, state.speed - 10.0)
+            targetThrottle = max(0.0, state.throttle - 15.0)
+        elif action_type in {"turn_left", "turn_right"}:
+            targetSpeed = max(0.0, state.speed - 15.0)
+            targetThrottle = max(0.0, state.throttle - 10.0)
+        else: # continue
+            targetSpeed = state.speed
+            targetThrottle = state.throttle
 
-        road_drag = 0.0
-        if state.road_condition == "wet":
-            road_drag = 0.20
-        elif state.road_condition == "rain":
-            road_drag = 0.35
-
-        acceleration = (throttle / 100.0) * 4.2 - (base_speed / 95.0) - road_drag
-
-        if action_type == "brake":
-            brake_effect = 3.2 * action_value
+        import random
+        # Apply ECU physics to reach targets
+        speed_delta = (targetSpeed - state.speed) * 0.20 + random.uniform(-2.0, 2.0)
+        speed = clamp(state.speed + speed_delta, 0.0, 160.0)
+        
+        throttle_delta = (targetThrottle - state.throttle) * 0.25 + random.uniform(-3.0, 3.0)
+        throttle = clamp(state.throttle + throttle_delta, 0.0, 100.0)
+        
+        # Apply road condition friction and brake failures
+        if action_type in {"brake", "stop"}:
+            brake_effect = 1.0
             if state.failures.brake_failure:
-                brake_effect *= 0.35
-            acceleration -= brake_effect
+                brake_effect = 0.35
+            
+            friction = 1.0
+            if state.road_condition == "wet":
+                friction = 0.8
+            elif state.road_condition == "rain":
+                friction = 0.65
+                
+            drop_factor = 15.0 * action_value if action_type == "brake" else 25.0
+            speed = clamp(state.speed - drop_factor * friction * brake_effect, 0.0, 160.0)
 
-        if action_type == "stop":
-            stop_effect = 5.8
-            if state.failures.brake_failure:
-                stop_effect *= 0.45
-            acceleration -= stop_effect
-
-        if action_type in {"turn_left", "turn_right"}:
-            acceleration -= 0.8
-
-        speed = clamp(base_speed + acceleration, 0.0, 220.0)
+        acceleration = speed - state.speed
 
         if speed < 1:
             gear = 0
@@ -108,9 +111,10 @@ class AutoMindSimulator:
         else:
             gear = 6
 
-        rpm = 800.0 + (speed * 34.0) + (throttle * 11.0)
+        # ECU mapped RPM: 800 + speed*32 + throttle*18 + noise
+        rpm = clamp(800.0 + speed * 32.0 + throttle * 18.0 + random.uniform(-120.0, 120.0), 700.0, 5200.0)
         if gear == 0:
-            rpm = max(750.0, 780.0 + throttle * 4.0)
+            rpm = clamp(750.0 + throttle * 4.0 + random.uniform(-50.0, 50.0), 700.0, 5200.0)
 
         engine_load = clamp((throttle * 0.75) + (speed * 0.35), 0.0, 100.0)
         transmission_load = clamp((speed * 0.45) + (gear * 6.0), 0.0, 100.0)
@@ -122,7 +126,7 @@ class AutoMindSimulator:
             "throttle": throttle,
             "acceleration": clamp(acceleration, -12.0, 12.0),
             "gear": gear,
-            "rpm": clamp(rpm, 0.0, 8000.0),
+            "rpm": rpm,
             "engine_load": engine_load,
             "transmission_load": transmission_load,
             "fuel_rate": fuel_rate,
@@ -163,12 +167,11 @@ class AutoMindSimulator:
 
         engine_temp = update_engine_temperature(
             engine_temp=state.engine_temp,
-            speed=powertrain["speed"],
+            rpm=powertrain["rpm"],
             action_type=action_type,
             road_condition=state.road_condition,
             overheating_active=state.failures.engine_overheating,
         )
-        engine_temp += 0.018 * powertrain["rpm"] / 100.0
 
         oil_level = update_oil_level(
             oil_level=state.oil_level,

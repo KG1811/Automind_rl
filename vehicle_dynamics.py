@@ -88,42 +88,39 @@ def update_distance_to_obstacle(
     return clamp(new_distance, 0.0, 200.0)
 
 
+import random
+
 def update_engine_temperature(
     engine_temp: float,
-    speed: float,
+    rpm: float,
     action_type: str,
     road_condition: str,
     overheating_active: bool,
 ) -> float:
     """
-    Simple physics-lite temperature update.
+    Physics-based temperature target seeking model derived from ECU logic.
     """
-    temp = engine_temp
-
-    # Base running heat
-    temp += 0.04 * speed
-
-    # Aggressive driving heats more
-    if action_type == "accelerate":
-        temp += 3.0
-    elif action_type == "brake":
-        temp += 0.5
-    elif action_type == "stop":
-        temp -= 2.5
-    elif action_type == "continue":
-        temp += 0.8
+    coolantTarget = 82 + (rpm / 5200.0) * 25
 
     # Cooler weather/road effect
     if road_condition == "rain":
-        temp -= 1.5
+        coolantTarget -= 5.0
     elif road_condition == "wet":
-        temp -= 0.7
+        coolantTarget -= 2.0
 
     # Existing fault worsens temperature
     if overheating_active:
-        temp += 4.5
+        coolantTarget += 30.0
 
-    return clamp(temp, 20.0, 150.0)
+    if action_type == "stop":
+        # Cools down when stopped
+        noise = random.uniform(0.02, 0.1)
+        temp = engine_temp - noise * 10.0 
+        return clamp(temp, 25.0, 150.0)
+    else:
+        noise = random.uniform(-0.2, 0.4)
+        temp = engine_temp + (coolantTarget - engine_temp) * 0.08 + noise
+        return clamp(temp, 60.0, 150.0)
 
 
 def estimate_collision_risk(

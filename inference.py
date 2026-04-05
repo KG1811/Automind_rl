@@ -16,17 +16,6 @@ MAX_STEPS = 20
 TEMPERATURE = 0.1
 
 
-def print_state(step: int, obs: dict) -> None:
-    print(f"\nSTEP {step}")
-    print(f"Speed: {obs['speed']} km/h")
-    print(f"RPM: {obs['rpm']}")
-    print(f"Throttle: {obs['throttle']} %")
-    print(f"Gear: {obs['gear']}")
-    print(f"Engine Temp: {obs['engine_temp']} C")
-    print(f"Oil: {obs['oil_level']} %")
-    print(f"Battery: {obs['battery_health']} %")
-    print(f"Distance: {obs['distance_to_obstacle']} m")
-    print(f"GPS: ({obs['latitude']}, {obs['longitude']})")
 
 
 def build_prompt(observation: dict) -> str:
@@ -77,9 +66,8 @@ def get_model_action(observation: dict) -> Optional[Action]:
 
 
 def run_episode(task_name: str = "autonomous_control", difficulty: str = "medium") -> float:
-    print("\n" + "=" * 60)
-    print(f"TASK={task_name} | DIFFICULTY={difficulty}")
-    print("=" * 60)
+    print("[START]")
+    print(json.dumps({"task": task_name, "difficulty": difficulty}))
 
     response = requests.post(
         f"{API_BASE_URL}/reset",
@@ -95,20 +83,13 @@ def run_episode(task_name: str = "autonomous_control", difficulty: str = "medium
     final_observation = None
 
     for step_idx in range(1, MAX_STEPS + 1):
-        print_state(step_idx, obs)
-
         llm_action = get_model_action(obs)
         observation_obj = Observation(**obs)
 
         if llm_action is not None:
             action = llm_action
-            source = "llm"
         else:
             action = agent_step(observation_obj)
-            source = "fallback_agent"
-
-        print(f"\nACTION SOURCE: {source}")
-        print(f"ACTION: {action.action_type} ({action.value}) | {action.reason}")
 
         step_response = requests.post(
             f"{API_BASE_URL}/step",
@@ -123,10 +104,14 @@ def run_episode(task_name: str = "autonomous_control", difficulty: str = "medium
         done = result["done"]
         metrics = result["metrics"]
 
-        print(f"REWARD: {reward}")
-        print(f"DONE: {done}")
-        print(f"METRICS: {metrics}")
-        print(f"INFO: {result['info']}")
+        print("[STEP]")
+        print(json.dumps({
+            "observation": obs,
+            "action": action.model_dump(),
+            "reward": reward,
+            "done": done,
+            "info": result["info"]
+        }))
 
         last_action = action
         last_metrics = Metrics(**metrics)
@@ -142,7 +127,8 @@ def run_episode(task_name: str = "autonomous_control", difficulty: str = "medium
         metrics=last_metrics,
     )
 
-    print("\nFINAL SCORE:", final_score)
+    print("[END]")
+    print(json.dumps({"final_score": final_score}))
     return final_score
 
 
@@ -151,4 +137,4 @@ if __name__ == "__main__":
     for difficulty in ["easy", "medium", "hard"]:
         scores.append(run_episode(task_name="autonomous_control", difficulty=difficulty))
 
-    print("\nAVERAGE SCORE:", round(sum(scores) / len(scores), 3))
+    pass
