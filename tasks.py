@@ -89,13 +89,13 @@ def get_safe_action(observation: Observation) -> str:
     Deterministic safe driving policy.
     """
 
-    if observation.distance_to_obstacle < 10:
-        return "brake"
-
-    if observation.engine_temp > 105:
+    if observation.engine_temp > 100 or observation.oil_level < 30:
         return "stop"
 
-    if observation.distance_to_obstacle > 40:
+    if observation.speed > 55:
+        return "continue"
+
+    if observation.speed < 40:
         return "accelerate"
 
     return "continue"

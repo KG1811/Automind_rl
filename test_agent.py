@@ -31,7 +31,6 @@ def run_test(difficulty):
         print(f"\nSTEP {i+1}")
         print("STATE:")
         print(f"  Speed: {obs.speed}")
-        print(f"  Distance: {obs.distance_to_obstacle}")
         print(f"  Temp: {obs.engine_temp}")
         print(f"  Oil: {obs.oil_level}")
         print(f"  Battery: {obs.battery_health}")

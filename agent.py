@@ -54,32 +54,25 @@ def decide_action(obs, fault, urgency):
 
     temp_trend = get_temp_trend(obs.history)
 
-    # 🚨 1. IMMEDIATE COLLISION SAFETY
-    if obs.distance_to_obstacle < 5:
-        return "brake", 1.0, f"extreme emergency: obstacle {obs.distance_to_obstacle}"
-
-    if obs.distance_to_obstacle < 10:
-        return "brake", 0.9, f"obstacle very close ({obs.distance_to_obstacle})"
-
-    # 🔥 2. ESCALATION LOGIC (NEW)
+    # 🚨 1. ESCALATION LOGIC
     if temp_trend == "rising" and obs.engine_temp > 105:
         return "stop", 0.9, "temperature rising consistently → preventive stop"
 
-    # ⚠️ 3. FAULT HANDLING
+    # ⚠️ 2. FAULT HANDLING
     if fault == "engine_overheating" and urgency == "high":
         return "stop", 1.0, f"critical overheating ({obs.engine_temp})"
 
     if fault == "low_oil":
         return "stop", 0.7, "low oil detected"
+        
+    if fault == "battery_issue":
+        return "stop", 0.8, "critical battery issue"
 
-    # 🚗 4. SMART BRAKING (not binary)
-    if obs.distance_to_obstacle < 20:
-        if obs.speed > 40:
-            return "brake", 0.9, "high speed + medium distance → preemptive braking"
-        return "brake", 0.6, "moderate risk"
-
-    # 🚗 5. NORMAL DRIVING
-    if obs.speed < 40 and obs.distance_to_obstacle > 30:
+    # 🚗 3. NORMAL DRIVING / SAFELY CONTINUING
+    if obs.speed > 55:
+        return "continue", 0.4, "cruising safely at higher speeds"
+        
+    if obs.speed < 40:
         return "accelerate", 0.6, "safe acceleration"
 
     return "continue", 0.5, "stable driving"
