@@ -81,9 +81,12 @@ def decide_action(obs, fault, urgency):
 # ---------------------------------
 # MAIN AGENT
 # ---------------------------------
-def agent_step(observation):
+def agent_step(observation, task_name="autonomous_control"):
 
     fault, urgency = diagnose_fault(observation)
+
+    if task_name == "fault_diagnosis":
+        return Action(action_type="diagnose", value=1.0, reason=fault)
 
     action_type, value, reason = decide_action(
         observation, fault, urgency

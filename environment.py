@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import random
-import threading
-import time
 from typing import Optional
 
 from models import (
@@ -61,9 +59,7 @@ class AutoMindEnv:
             "service_booking": None,
         }
 
-        self.running = True
-        self._lock = threading.Lock()
-        threading.Thread(target=self._auto_update_loop, daemon=True).start()
+
 
     def is_initialized(self) -> bool:
         return self.current_observation is not None
@@ -166,86 +162,42 @@ class AutoMindEnv:
         )
 
     def reset(self, task_name: str = "fault_diagnosis", difficulty: str = "easy") -> Observation:
-        with self._lock:
-            self.current_task = task_name
-            self.current_difficulty = difficulty
+        self.current_task = task_name
+        self.current_difficulty = difficulty
 
-            self.episode_state = EpisodeState(
-                step_count=0,
-                max_steps=self.max_steps,
-                is_collision=False,
-                is_engine_failure=False,
-                is_safe_stop=False,
-            )
+        self.episode_state = EpisodeState(
+            step_count=0,
+            max_steps=self.max_steps,
+            is_collision=False,
+            is_engine_failure=False,
+            is_safe_stop=False,
+        )
 
-            self.current_true_state = self._build_initial_telemetry_state(difficulty=difficulty)
-            self.current_observation = self._telemetry_to_observation(self.current_true_state)
+        self.current_true_state = self._build_initial_telemetry_state(difficulty=difficulty)
+        self.current_observation = self._telemetry_to_observation(self.current_true_state)
 
-            self.override_active = False
-            self.override_count = 0
-            self.last_action = Action(action_type="continue", value=0.25, reason="background cruise")
-            self.last_done = False
-            self.last_reward = 0.0
+        self.override_active = False
+        self.override_count = 0
+        self.last_action = Action(action_type="continue", value=0.25, reason="background cruise")
+        self.last_done = False
+        self.last_reward = 0.0
 
-            self.last_metrics = self._compute_metrics(
-                collision_risk=0.02,
-                observation=self.current_observation,
-            )
-            self.last_info = self._build_info(
-                observation=self.current_observation,
-                collision_risk=0.02,
-                action_type="continue",
-            )
+        self.last_metrics = self._compute_metrics(
+            collision_risk=0.02,
+            observation=self.current_observation,
+        )
+        self.last_info = self._build_info(
+            observation=self.current_observation,
+            collision_risk=0.02,
+            action_type="continue",
+        )
 
-            return self.current_observation
+        return self.current_observation
 
     def state(self) -> Observation:
         if self.current_observation is None:
             raise RuntimeError("Call reset() first")
         return self.current_observation
-
-    def _auto_update_loop(self) -> None:
-        while self.running:
-            time.sleep(self.update_interval_seconds)
-
-            with self._lock:
-                if self.current_observation is None or self.current_true_state is None or self.last_done:
-                    continue
-
-                transition = self.simulator.transition(
-                    state=self.current_true_state,
-                    previous_observation=self.current_observation,
-                    action_type=self.last_action.action_type,
-                    action_value=self.last_action.value,
-                    difficulty=self.current_difficulty or "easy",
-                )
-
-                self.current_true_state = transition["true_state"]
-                self.current_observation = transition["observation"]
-
-                self.episode_state.step_count += 1
-                self.episode_state.is_collision |= transition["is_collision"]
-                self.episode_state.is_engine_failure |= transition["is_engine_failure"]
-
-                if self.last_action.action_type == "stop" and self.current_observation.speed <= 3.0:
-                    self.episode_state.is_safe_stop = True
-
-                self.last_metrics = self._compute_metrics(
-                    collision_risk=transition["collision_risk"],
-                    observation=self.current_observation,
-                )
-                self.last_reward = self._compute_reward(
-                    action=self.last_action,
-                    collision_risk=transition["collision_risk"],
-                    observation=self.current_observation,
-                    is_collision=transition["is_collision"],
-                )
-                self.last_done = self._check_done()
-                self.last_info = self._build_info(
-                    observation=self.current_observation,
-                    collision_risk=transition["collision_risk"],
-                    action_type=self.last_action.action_type,
-                )
 
     def compute_health(self, obs: Observation, collision_risk: float) -> int:
         score = 100.0
@@ -414,76 +366,74 @@ class AutoMindEnv:
         return "in_progress"
 
     def step(self, action: Action) -> StepResult:
-        with self._lock:
-            if self.current_observation is None or self.current_true_state is None:
-                raise RuntimeError("Call reset() before step()")
-            if self.current_difficulty is None:
-                raise RuntimeError("Call reset() first.")
+        if self.current_observation is None or self.current_true_state is None:
+            raise RuntimeError("Call reset() before step()")
+        if self.current_difficulty is None:
+            raise RuntimeError("Call reset() first.")
 
-            self.override_active = self.episode_state.step_count > 0 and self.episode_state.step_count % 3 == 0
+        self.override_active = self.episode_state.step_count > 0 and self.episode_state.step_count % 3 == 0
 
-            applied_action = action
-            if self.override_active and action.action_type in ["stop", "brake"]:
-                self.override_count += 1
-                applied_action = Action(
-                    action_type="accelerate",
-                    value=min(1.0, max(0.2, action.value)),
-                    reason="Human override",
-                )
-
-            transition = self.simulator.transition(
-                state=self.current_true_state,
-                previous_observation=self.current_observation,
-                action_type=applied_action.action_type,
-                action_value=applied_action.value,
-                difficulty=self.current_difficulty,
+        applied_action = action
+        if self.override_active and action.action_type in ["stop", "brake"]:
+            self.override_count += 1
+            applied_action = Action(
+                action_type="accelerate",
+                value=min(1.0, max(0.2, action.value)),
+                reason="Human override",
             )
 
-            self.current_true_state = transition["true_state"]
-            self.current_observation = transition["observation"]
-            self.last_action = applied_action
+        transition = self.simulator.transition(
+            state=self.current_true_state,
+            previous_observation=self.current_observation,
+            action_type=applied_action.action_type,
+            action_value=applied_action.value,
+            difficulty=self.current_difficulty,
+        )
 
-            self.episode_state.step_count += 1
-            self.episode_state.is_collision |= transition["is_collision"]
-            self.episode_state.is_engine_failure |= transition["is_engine_failure"]
+        self.current_true_state = transition["true_state"]
+        self.current_observation = transition["observation"]
+        self.last_action = applied_action
 
-            if applied_action.action_type == "stop" and self.current_observation.speed <= 3.0:
-                self.episode_state.is_safe_stop = True
+        self.episode_state.step_count += 1
+        self.episode_state.is_collision |= transition["is_collision"]
+        self.episode_state.is_engine_failure |= transition["is_engine_failure"]
 
-            self.last_metrics = self._compute_metrics(
-                collision_risk=transition["collision_risk"],
-                observation=self.current_observation,
-            )
-            self.last_reward = self._compute_reward(
-                action=applied_action,
-                collision_risk=transition["collision_risk"],
-                observation=self.current_observation,
-                is_collision=transition["is_collision"],
-            )
-            self.last_done = self._check_done()
-            self.last_info = self._build_info(
-                observation=self.current_observation,
-                collision_risk=transition["collision_risk"],
-                action_type=applied_action.action_type,
-            )
+        if applied_action.action_type == "stop" and self.current_observation.speed <= 3.0:
+            self.episode_state.is_safe_stop = True
 
-            return StepResult(
-                observation=self.current_observation,
-                reward=self.last_reward,
-                done=self.last_done,
-                info=self.last_info,
-                metrics=self.last_metrics,
-            )
+        self.last_metrics = self._compute_metrics(
+            collision_risk=transition["collision_risk"],
+            observation=self.current_observation,
+        )
+        self.last_reward = self._compute_reward(
+            action=applied_action,
+            collision_risk=transition["collision_risk"],
+            observation=self.current_observation,
+            is_collision=transition["is_collision"],
+        )
+        self.last_done = self._check_done()
+        self.last_info = self._build_info(
+            observation=self.current_observation,
+            collision_risk=transition["collision_risk"],
+            action_type=applied_action.action_type,
+        )
+
+        return StepResult(
+            observation=self.current_observation,
+            reward=self.last_reward,
+            done=self.last_done,
+            info=self.last_info,
+            metrics=self.last_metrics,
+        )
 
     def get_full_state(self) -> dict:
-        with self._lock:
-            if self.current_observation is None:
-                raise RuntimeError("Call reset() first")
+        if self.current_observation is None:
+            raise RuntimeError("Call reset() first")
 
-            return {
-                "observation": self.current_observation.model_dump(),
-                "reward": self.last_reward,
-                "done": self.last_done,
-                "metrics": self.last_metrics.model_dump(),
-                "info": self.last_info,
-            }
+        return {
+            "observation": self.current_observation.model_dump(),
+            "reward": self.last_reward,
+            "done": self.last_done,
+            "metrics": self.last_metrics.model_dump(),
+            "info": self.last_info,
+        }

@@ -36,7 +36,7 @@ brake, accelerate, turn_left, turn_right, continue, stop, request_service
 """.strip()
 
 
-def get_model_action(observation: dict) -> Optional[Action]:
+def get_model_action(observation: dict, task_name: str = "autonomous_control") -> Optional[Action]:
     if not HF_TOKEN:
         return None
 
@@ -56,8 +56,12 @@ def get_model_action(observation: dict) -> Optional[Action]:
         text = completion.choices[0].message.content or ""
         payload = json.loads(text)
 
+        action_type = payload.get("action_type")
+        if task_name == "fault_diagnosis":
+            action_type = "diagnose"
+            
         return Action(
-            action_type=payload["action_type"],
+            action_type=action_type,
             value=float(payload["value"]),
             reason=payload["reason"],
         )
@@ -83,13 +87,13 @@ def run_episode(task_name: str = "autonomous_control", difficulty: str = "medium
     final_observation = None
 
     for step_idx in range(1, MAX_STEPS + 1):
-        llm_action = get_model_action(obs)
+        llm_action = get_model_action(obs, task_name=task_name)
         observation_obj = Observation(**obs)
 
         if llm_action is not None:
             action = llm_action
         else:
-            action = agent_step(observation_obj)
+            action = agent_step(observation_obj, task_name=task_name)
 
         step_response = requests.post(
             f"{API_BASE_URL}/step",
@@ -133,8 +137,23 @@ def run_episode(task_name: str = "autonomous_control", difficulty: str = "medium
 
 
 if __name__ == "__main__":
-    scores = []
-    for difficulty in ["easy", "medium", "hard"]:
-        scores.append(run_episode(task_name="autonomous_control", difficulty=difficulty))
+    tasks = ["fault_diagnosis", "driving_decision", "autonomous_control"]
+    difficulties = ["easy", "medium", "hard"]
 
-    pass
+    results = {}
+    
+    for task in tasks:
+        results[task] = {}
+        for diff in difficulties:
+            score = run_episode(task_name=task, difficulty=diff)
+            results[task][diff] = score
+
+    print("\n==============================")
+    print("      BASELINE RESULTS")
+    print("==============================\n")
+    for task, diffs in results.items():
+        print(f"[{task.upper()}]")
+        for diff, score in diffs.items():
+            print(f"  {diff.capitalize()}: {score:.3f}")
+        avg_score = sum(diffs.values()) / len(diffs)
+        print(f"  --> Average: {avg_score:.3f}\n")

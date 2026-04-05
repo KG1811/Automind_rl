@@ -88,14 +88,13 @@ def update_distance_to_obstacle(
     return clamp(new_distance, 0.0, 200.0)
 
 
-import random
-
 def update_engine_temperature(
     engine_temp: float,
     rpm: float,
     action_type: str,
     road_condition: str,
     overheating_active: bool,
+    rng,
 ) -> float:
     """
     Physics-based temperature target seeking model derived from ECU logic.
@@ -114,16 +113,16 @@ def update_engine_temperature(
 
     if action_type == "stop":
         # Cools down when stopped
-        noise = random.uniform(0.02, 0.1)
+        noise = rng.uniform(0.02, 0.1)
         temp = engine_temp - noise * 10.0 
         return clamp(temp, 25.0, 150.0)
     elif action_type == "brake":
         # Cools down when braking
-        noise = random.uniform(0.02, 0.08)
+        noise = rng.uniform(0.02, 0.08)
         temp = engine_temp - noise * 8.0 
         return clamp(temp, 40.0, 150.0)
     else:
-        noise = random.uniform(-0.2, 0.4)
+        noise = rng.uniform(-0.2, 0.4)
         temp = engine_temp + (coolantTarget - engine_temp) * 0.08 + noise
         return clamp(temp, 60.0, 150.0)
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import random
-
 from models import Observation, HistoryItem, TelemetryState, FailureState
 from vehicle_dynamics import (
     apply_speed_decay,
@@ -70,24 +68,23 @@ class AutoMindSimulator:
         else: # continue
             # Simulate dynamic real-world driving behavior
             if state.distance_to_obstacle > 90:
-                targetSpeed = clamp(state.speed + 12.0 + random.uniform(-2, 10), 40.0, 130.0)
+                targetSpeed = clamp(state.speed + 12.0 + self.rng.uniform(-2, 10), 40.0, 130.0)
                 targetThrottle = clamp(state.throttle + 10.0, 40.0, 85.0)
             elif state.distance_to_obstacle > 40:
-                targetSpeed = clamp(state.speed + random.uniform(-5, 10), 20.0, 75.0)
-                targetThrottle = clamp(state.throttle + random.uniform(-8, 8), 20.0, 55.0)
+                targetSpeed = clamp(state.speed + self.rng.uniform(-5, 10), 20.0, 75.0)
+                targetThrottle = clamp(state.throttle + self.rng.uniform(-8, 8), 20.0, 55.0)
             elif state.distance_to_obstacle < 20:
                 targetSpeed = max(0.0, state.speed - 25.0)
                 targetThrottle = 0.0
             else:
-                targetSpeed = state.speed + random.uniform(-4.0, 4.0)
-                targetThrottle = state.throttle + random.uniform(-5.0, 5.0)
+                targetSpeed = state.speed + self.rng.uniform(-4.0, 4.0)
+                targetThrottle = state.throttle + self.rng.uniform(-5.0, 5.0)
 
-        import random
         # Apply ECU physics to reach targets
-        speed_delta = (targetSpeed - state.speed) * 0.20 + random.uniform(-2.0, 2.0)
+        speed_delta = (targetSpeed - state.speed) * 0.20 + self.rng.uniform(-2.0, 2.0)
         speed = clamp(state.speed + speed_delta, 0.0, 160.0)
         
-        throttle_delta = (targetThrottle - state.throttle) * 0.25 + random.uniform(-3.0, 3.0)
+        throttle_delta = (targetThrottle - state.throttle) * 0.25 + self.rng.uniform(-3.0, 3.0)
         throttle = clamp(state.throttle + throttle_delta, 0.0, 100.0)
         
         # Apply road condition friction and brake failures
@@ -123,9 +120,9 @@ class AutoMindSimulator:
             gear = 6
 
         # ECU mapped RPM: 800 + speed*32 + throttle*18 + noise
-        rpm = clamp(800.0 + speed * 32.0 + throttle * 18.0 + random.uniform(-120.0, 120.0), 700.0, 5200.0)
+        rpm = clamp(800.0 + speed * 32.0 + throttle * 18.0 + self.rng.uniform(-120.0, 120.0), 700.0, 5200.0)
         if gear == 0:
-            rpm = clamp(750.0 + throttle * 4.0 + random.uniform(-50.0, 50.0), 700.0, 5200.0)
+            rpm = clamp(750.0 + throttle * 4.0 + self.rng.uniform(-50.0, 50.0), 700.0, 5200.0)
 
         engine_load = clamp((throttle * 0.75) + (speed * 0.35), 0.0, 100.0)
         transmission_load = clamp((speed * 0.45) + (gear * 6.0), 0.0, 100.0)
@@ -182,6 +179,7 @@ class AutoMindSimulator:
             action_type=action_type,
             road_condition=state.road_condition,
             overheating_active=state.failures.engine_overheating,
+            rng=self.rng,
         )
 
         oil_level = update_oil_level(

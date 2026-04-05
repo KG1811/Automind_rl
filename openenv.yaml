@@ -20,6 +20,7 @@ action_space:
     action_type:
       type: string
       enum:
+        - diagnose
         - brake
         - accelerate
         - turn_left
@@ -42,17 +43,9 @@ observation_space:
     throttle: { type: number }
     gear: { type: integer }
     engine_load: { type: number }
-    transmission_load: { type: number }
     fuel_rate: { type: number }
     acceleration: { type: number }
     engine_temp: { type: number }
-    distance_to_obstacle: { type: number }
-    road_condition:
-      type: string
-      enum: [dry, wet, rain]
-    drive_mode:
-      type: string
-      enum: [idle, city, cruise, sport]
     oil_level: { type: number }
     battery_health: { type: number }
     latitude: { type: number }

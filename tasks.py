@@ -64,11 +64,15 @@ def detect_true_fault(observation: Observation) -> str:
     return "no_fault"
 
 
-def grade_fault_diagnosis(predicted_fault: str, observation: Observation) -> float:
+def grade_fault_diagnosis(action: Optional[Action], observation: Observation) -> float:
     """
     Strict deterministic scoring.
     """
 
+    if action is None or action.action_type != "diagnose":
+        return 0.0
+
+    predicted_fault = action.reason
     true_fault = detect_true_fault(observation)
 
     if predicted_fault == true_fault:
@@ -151,13 +155,10 @@ def evaluate_task(
     action: Optional[Action],
     observation: Observation,
     metrics: Optional[Metrics],
-    predicted_fault: Optional[str] = None,
 ) -> float:
 
     if task_name == "fault_diagnosis":
-        if predicted_fault is None:
-            return 0.0
-        return grade_fault_diagnosis(predicted_fault, observation)
+        return grade_fault_diagnosis(action, observation)
 
     if task_name == "driving_decision":
         if action is None:
