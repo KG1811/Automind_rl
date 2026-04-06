@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import time
 from typing import Optional
 
 from models import (
@@ -15,6 +16,7 @@ from models import (
 from simulator import AutoMindSimulator
 from service_engine import find_nearest_service
 from tasks import grade_driving_decision, grade_fault_diagnosis
+from vehicle_payload import build_vehicle_events, build_vehicle_signals
 
 
 class AutoMindEnv:
@@ -39,8 +41,10 @@ class AutoMindEnv:
         self.current_true_state: Optional[TelemetryState] = None
 
         self.last_action = Action(action_type="continue", value=0.25, reason="background cruise")
+        self.background_action = Action(action_type="continue", value=0.25, reason="background cruise")
         self.override_active = False
         self.override_count = 0
+        self.last_background_sync_at = time.monotonic()
 
         self.last_metrics = Metrics(
             safety_score=1.0,
@@ -70,7 +74,7 @@ class AutoMindEnv:
 
     def _build_initial_telemetry_state(self, difficulty: str) -> TelemetryState:
         if difficulty == "easy":
-            return TelemetryState(
+            base_state = TelemetryState(
                 speed=18.0,
                 rpm=1200.0,
                 throttle=18.0,
@@ -90,9 +94,16 @@ class AutoMindEnv:
                 heading=0.0,
                 failures=FailureState(),
             )
+            return self._attach_vehicle_payload(
+                telemetry=base_state,
+                action_type="continue",
+                action_value=0.25,
+                fuel_level=78.0,
+                odometer_km=18432.6,
+            )
 
         if difficulty == "medium":
-            return TelemetryState(
+            base_state = TelemetryState(
                 speed=42.0,
                 rpm=2200.0,
                 throttle=34.0,
@@ -112,9 +123,16 @@ class AutoMindEnv:
                 heading=22.0,
                 failures=FailureState(low_oil=True),
             )
+            return self._attach_vehicle_payload(
+                telemetry=base_state,
+                action_type="continue",
+                action_value=0.35,
+                fuel_level=46.0,
+                odometer_km=51877.2,
+            )
 
         if difficulty == "hard":
-            return TelemetryState(
+            base_state = TelemetryState(
                 speed=44.0,
                 rpm=2580.0,
                 throttle=36.0,
@@ -139,8 +157,62 @@ class AutoMindEnv:
                     low_oil=True,
                 ),
             )
+            return self._attach_vehicle_payload(
+                telemetry=base_state,
+                action_type="continue",
+                action_value=0.4,
+                fuel_level=31.0,
+                odometer_km=92341.7,
+            )
 
         raise ValueError("Invalid difficulty")
+
+    def _attach_vehicle_payload(
+        self,
+        telemetry: TelemetryState,
+        action_type: str,
+        action_value: float,
+        fuel_level: float,
+        odometer_km: float,
+    ) -> TelemetryState:
+        signals = build_vehicle_signals(
+            speed=telemetry.speed,
+            rpm=telemetry.rpm,
+            throttle=telemetry.throttle,
+            action_type=action_type,
+            action_value=action_value,
+            gear=telemetry.gear,
+            engine_load=telemetry.engine_load,
+            transmission_load=telemetry.transmission_load,
+            fuel_rate=telemetry.fuel_rate,
+            acceleration=telemetry.acceleration,
+            engine_temp=telemetry.engine_temp,
+            oil_level=telemetry.oil_level,
+            battery_health=telemetry.battery_health,
+            distance_to_obstacle=telemetry.distance_to_obstacle,
+            road_condition=telemetry.road_condition,
+            drive_mode=telemetry.drive_mode,
+            latitude=telemetry.latitude,
+            longitude=telemetry.longitude,
+            heading=telemetry.heading,
+            previous_fuel_level=fuel_level,
+            previous_odometer_km=odometer_km,
+            battery_issue_active=telemetry.failures.battery_issue,
+            low_oil_active=telemetry.failures.low_oil,
+            dt_seconds=0.0,
+            rng=self.rng,
+        )
+        events = build_vehicle_events(
+            signals=signals,
+            failures=telemetry.failures,
+            is_collision=False,
+        )
+        return telemetry.model_copy(
+            update={
+                "vehicle_signals": signals,
+                "vehicle_events": events,
+            }
+        )
 
     def _telemetry_to_observation(self, telemetry: TelemetryState) -> Observation:
         return Observation(
@@ -163,6 +235,8 @@ class AutoMindEnv:
             heading=telemetry.heading,
             failures=telemetry.failures,
             history=[],
+            vehicle_signals=telemetry.vehicle_signals,
+            vehicle_events=telemetry.vehicle_events,
         )
 
     def reset(self, task_name: str = "fault_diagnosis", difficulty: str = "easy") -> Observation:
@@ -183,6 +257,7 @@ class AutoMindEnv:
         self.override_active = False
         self.override_count = 0
         self.last_action = Action(action_type="continue", value=0.25, reason="background cruise")
+        self.last_background_sync_at = time.monotonic()
         self.last_done = False
         self.last_reward = 0.0
         self.last_info = {
@@ -213,7 +288,52 @@ class AutoMindEnv:
     def state(self) -> Observation:
         if self.current_observation is None:
             raise RuntimeError("Call reset() first")
+        self._sync_background_state()
         return self.current_observation
+
+    def _sync_background_state(self) -> None:
+        if (
+            self.current_observation is None
+            or self.current_true_state is None
+            or self.current_difficulty is None
+        ):
+            return
+
+        now = time.monotonic()
+        elapsed = now - self.last_background_sync_at
+        if elapsed < self.update_interval_seconds:
+            return
+
+        steps_to_apply = int(elapsed // self.update_interval_seconds)
+
+        for _ in range(steps_to_apply):
+            transition = self.simulator.transition(
+                state=self.current_true_state,
+                previous_observation=self.current_observation,
+                action_type=self.background_action.action_type,
+                action_value=self.background_action.value,
+                difficulty=self.current_difficulty,
+            )
+
+            self.current_true_state = transition["true_state"]
+            self.current_observation = transition["observation"]
+            self.last_metrics = self._compute_metrics(
+                collision_risk=transition["collision_risk"],
+                observation=self.current_observation,
+            )
+            self.last_reward = self._compute_reward(
+                action=self.background_action,
+                collision_risk=transition["collision_risk"],
+                observation=self.current_observation,
+                is_collision=transition["is_collision"],
+            )
+            self.last_info = self._build_info(
+                observation=self.current_observation,
+                collision_risk=transition["collision_risk"],
+                action_type=self.background_action.action_type,
+            )
+
+        self.last_background_sync_at += steps_to_apply * self.update_interval_seconds
 
     def compute_health(self, obs: Observation, collision_risk: float) -> int:
         score = 100.0
@@ -491,6 +611,7 @@ class AutoMindEnv:
             action_type=applied_action.action_type,
         )
         self.last_info["task_score"] = round(self.last_reward, 3)
+        self.last_background_sync_at = time.monotonic()
 
         if self.current_task == "driving_decision":
             decision_score = grade_driving_decision(action, pre_action_observation)
@@ -526,6 +647,8 @@ class AutoMindEnv:
     def get_full_state(self) -> dict:
         if self.current_observation is None:
             raise RuntimeError("Call reset() first")
+
+        self._sync_background_state()
 
         return {
             "observation": self.current_observation.model_dump(),

@@ -24,6 +24,7 @@ from noise_engine import (
     maybe_corrupt_distance,
 )
 from gps_engine import update_gps
+from vehicle_payload import build_vehicle_events, build_vehicle_signals
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -143,6 +144,95 @@ class AutoMindSimulator:
             "drive_mode": drive_mode,
         }
 
+    def _build_state_vehicle_payload(
+        self,
+        state: TelemetryState,
+        powertrain: dict,
+        action_type: str,
+        action_value: float,
+        engine_temp: float,
+        oil_level: float,
+        battery_health: float,
+        distance_to_obstacle: float,
+        latitude: float,
+        longitude: float,
+        heading: float,
+        failures: FailureState,
+        is_collision: bool,
+    ) -> tuple:
+        previous_signals = state.vehicle_signals
+        signals = build_vehicle_signals(
+            speed=powertrain["speed"],
+            rpm=powertrain["rpm"],
+            throttle=powertrain["throttle"],
+            action_type=action_type,
+            action_value=action_value,
+            gear=powertrain["gear"],
+            engine_load=powertrain["engine_load"],
+            transmission_load=powertrain["transmission_load"],
+            fuel_rate=powertrain["fuel_rate"],
+            acceleration=powertrain["acceleration"],
+            engine_temp=engine_temp,
+            oil_level=oil_level,
+            battery_health=battery_health,
+            distance_to_obstacle=distance_to_obstacle,
+            road_condition=state.road_condition,
+            drive_mode=powertrain["drive_mode"],
+            latitude=latitude,
+            longitude=longitude,
+            heading=heading,
+            previous_fuel_level=previous_signals.fuel_level,
+            previous_odometer_km=previous_signals.odometer_km,
+            battery_issue_active=failures.battery_issue,
+            low_oil_active=failures.low_oil,
+            dt_seconds=self.dt_seconds,
+            rng=self.rng,
+        )
+        events = build_vehicle_events(
+            signals=signals,
+            failures=failures,
+            is_collision=is_collision,
+        )
+        return signals, events
+
+    def _build_observation_vehicle_signals(
+        self,
+        next_state: TelemetryState,
+        observed_speed: float,
+        observed_rpm: float,
+        observed_engine_temp: float,
+        observed_distance: float,
+        action_type: str,
+        action_value: float,
+    ):
+        return build_vehicle_signals(
+            speed=observed_speed,
+            rpm=observed_rpm,
+            throttle=next_state.throttle,
+            action_type=action_type,
+            action_value=action_value,
+            gear=next_state.gear,
+            engine_load=next_state.engine_load,
+            transmission_load=next_state.transmission_load,
+            fuel_rate=next_state.fuel_rate,
+            acceleration=next_state.acceleration,
+            engine_temp=observed_engine_temp,
+            oil_level=next_state.oil_level,
+            battery_health=next_state.battery_health,
+            distance_to_obstacle=observed_distance,
+            road_condition=next_state.road_condition,
+            drive_mode=next_state.drive_mode,
+            latitude=next_state.latitude,
+            longitude=next_state.longitude,
+            heading=next_state.heading,
+            previous_fuel_level=next_state.vehicle_signals.fuel_level,
+            previous_odometer_km=next_state.vehicle_signals.odometer_km,
+            battery_issue_active=next_state.failures.battery_issue,
+            low_oil_active=next_state.failures.low_oil,
+            dt_seconds=0.0,
+            rng=self.rng,
+        )
+
     def transition(
         self,
         state: TelemetryState,
@@ -227,6 +317,22 @@ class AutoMindSimulator:
             dt_seconds=self.dt_seconds,
         )
 
+        vehicle_signals, vehicle_events = self._build_state_vehicle_payload(
+            state=state,
+            powertrain=powertrain,
+            action_type=action_type,
+            action_value=action_value,
+            engine_temp=engine_temp,
+            oil_level=oil_level,
+            battery_health=battery_health,
+            distance_to_obstacle=distance_to_obstacle,
+            latitude=latitude,
+            longitude=longitude,
+            heading=heading,
+            failures=failures,
+            is_collision=is_collision,
+        )
+
         next_state = TelemetryState(
             speed=round(powertrain["speed"], 2),
             rpm=round(powertrain["rpm"], 2),
@@ -246,6 +352,8 @@ class AutoMindSimulator:
             longitude=round(longitude, 6),
             heading=round(heading, 2),
             failures=failures,
+            vehicle_signals=vehicle_signals,
+            vehicle_events=vehicle_events,
         )
 
         observed_speed = add_sensor_noise(
@@ -276,6 +384,16 @@ class AutoMindSimulator:
             rng=self.rng,
             value=next_state.distance_to_obstacle,
             sensor_failure=failures.sensor_failure,
+        )
+
+        observed_vehicle_signals = self._build_observation_vehicle_signals(
+            next_state=next_state,
+            observed_speed=round(observed_speed, 2),
+            observed_rpm=round(observed_rpm, 2),
+            observed_engine_temp=round(observed_engine_temp, 2),
+            observed_distance=round(observed_distance, 2),
+            action_type=action_type,
+            action_value=action_value,
         )
 
         updated_history = list(previous_observation.history)
@@ -312,6 +430,8 @@ class AutoMindSimulator:
             heading=next_state.heading,
             failures=next_state.failures,
             history=updated_history[-8:],
+            vehicle_signals=observed_vehicle_signals,
+            vehicle_events=next_state.vehicle_events,
         )
 
         return {
